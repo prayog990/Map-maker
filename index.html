@@ -358,7 +358,6 @@ let curveActive = false;
 let lastSavedPos = null;
 let totalDist = 0;
 let currentAcc = 0;
-let startTimestamp = 0;
 
 // ==================== STORAGE ====================
 function loadData() {
@@ -422,19 +421,20 @@ function createNewProject() {
   points = []; sessions = 0; totalDist = 0; lastSavedPos = null;
   saveData();
   loadData();
-  alert("Project ready hai!");
+  alert("Project '" + name + "' ready hai!");
 }
 
 function switchProject(pid) {
-  if (tracking) { alert("Tracking chalu hai!"); return; }
+  if (tracking) { alert("Tracking chal rahi hai, pehle stop karein!"); return; }
   saveData();
   currentPid = pid;
+  localStorage.setItem('pt_current_pid', pid);
   loadData();
 }
 
 function deleteProject(pid) {
   if (pid === 'default') return;
-  if (!confirm("Delete karein?")) return;
+  if (!confirm("Delete karna chahte hain?")) return;
   projects = projects.filter(p => p.id !== pid);
   localStorage.removeItem('pt_data_' + pid);
   if (currentPid === pid) currentPid = 'default';
@@ -442,18 +442,25 @@ function deleteProject(pid) {
   loadData();
 }
 
-// ==================== MAP ====================
+// ==================== MAP & DRAWING ====================
 const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([20.5937, 78.9629], 5);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 22 }).addTo(map);
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-let polyline = L.polyline([], { color: '#00e5a0', weight: 4, opacity: 0.9, lineJoin: 'round', lineCap: 'round', smoothFactor: 1.5 }).addTo(map);
+let polyline = L.polyline([], { 
+  color: '#00e5a0', weight: 4, opacity: 0.9, lineJoin: 'round', lineCap: 'round', smoothFactor: 1.5 
+}).addTo(map);
 let userMarker = null;
 
 function rebuildMap() {
-  let groups = []; let currentGroup = []; let lastSid = null;
+  let groups = [];
+  let currentGroup = [];
+  let lastSid = null;
   points.forEach(p => {
-    if (lastSid !== null && p.sid !== lastSid) { groups.push(currentGroup); currentGroup = []; }
+    if (lastSid !== null && p.sid !== lastSid) {
+      groups.push(currentGroup);
+      currentGroup = [];
+    }
     currentGroup.push([p.lat, p.lng]);
     lastSid = p.sid;
   });
@@ -462,25 +469,7 @@ function rebuildMap() {
   updateFeed();
 }
 
-// ==================== HELPERS ====================
-function updateSetting(key, val) {
-  settings[key] = parseFloat(val);
-  document.getElementById('lbl-' + key).textContent = key === 'angle' ? val + '°' : val + ' m';
-  saveData();
-}
-function applySettingsUI() {
-  ['normal','curve','angle','skip'].forEach(k => {
-    const el = document.getElementById('sl-' + k);
-    if (el) { el.value = settings[k]; document.getElementById('lbl-' + k).textContent = settings[k] + (k === 'angle' ? '°' : ' m'); }
-  });
-}
-function openSettings() {
-  document.getElementById('si-pts').textContent = points.length;
-  document.getElementById('si-km').textContent = (totalDist/1000).toFixed(2) + ' km';
-  document.getElementById('si-sess').textContent = sessions;
-  document.getElementById('settings-overlay').classList.add('open');
-}
-function outsideClose(e) { if (e.target === document.getElementById('settings-overlay')) document.getElementById('settings-overlay').classList.remove('open'); }
+// ==================== MATH & LOGIC ====================
 function haversine(lat1, lng1, lat2, lng2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -488,123 +477,180 @@ function haversine(lat1, lng1, lat2, lng2) {
   const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
+
 function bearing(lat1, lng1, lat2, lng2) {
   const dLng = (lng2 - lng1) * Math.PI / 180;
   const y = Math.sin(dLng) * Math.cos(lat2 * Math.PI / 180);
   const x = Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180) - Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLng);
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
-function angleDiff(a, b) { let d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
 
-function isAlreadyMapped(lat, lng) {
-  const skipDist = settings.skip;
-  for (let p of points) { if (haversine(lat, lng, p.lat, p.lng) < skipDist) return true; }
-  return false;
+function angleDiff(a, b) {
+  let d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
 }
 
-function computeGap(lat, lng) {
+function computeGap() {
   if (headingHistory.length < 2) return settings.normal;
   const diff = angleDiff(headingHistory[headingHistory.length - 2], headingHistory[headingHistory.length - 1]);
-  if (diff >= settings.angle) { curveActive = true; straightCount = 0; return settings.curve; }
-  curveActive = false;
-  if (currentAcc > 25 && straightCount > 6) straightCount = 6; else straightCount++;
-  if (straightCount <= 2) return settings.curve;
-  if (straightCount <= 4) return Math.max(Math.round(settings.normal / 4 / 5) * 5, settings.curve);
-  if (straightCount <= 6) return Math.max(Math.round(settings.normal / 2 / 5) * 5, settings.curve);
-  if (straightCount <= 12) return settings.normal;
-  if (straightCount <= 20) return Math.round((settings.normal * 1.5) / 5) * 5;
-  return Math.min(Math.round((settings.normal * 2) / 5) * 5, 300);
+
+  if (diff >= settings.angle) {
+    curveActive = true; straightCount = 0; return settings.curve;
+  } else {
+    curveActive = false;
+    if (currentAcc > 25 && straightCount > 6) straightCount = 6;
+    else straightCount++;
+
+    if (straightCount <= 2) return settings.curve;
+    if (straightCount <= 4) return Math.max(Math.round(settings.normal/4/5)*5, settings.curve);
+    if (straightCount <= 6) return Math.max(Math.round(settings.normal/2/5)*5, settings.curve);
+    if (straightCount <= 12) return settings.normal;
+    if (straightCount <= 20) return Math.round((settings.normal*1.5)/5)*5;
+    return Math.min(Math.round((settings.normal*2)/5)*5, 300);
+  }
 }
 
 // ==================== TRACKING ====================
 function toggleTracking() { if (tracking) stopTracking(); else startTracking(); }
+
 function startTracking() {
-  if (!navigator.geolocation) return;
-  tracking = true; sessions++; startTimestamp = Date.now(); headingHistory = []; straightCount = 0;
+  tracking = true; sessions++; headingHistory = [];
   setStatus('active');
   document.getElementById('start-btn').className = 'stop';
   document.getElementById('btn-icon').textContent = '■';
   document.getElementById('btn-label').textContent = 'STOP';
-  watchId = navigator.geolocation.watchPosition(onPosition, onGPSError, { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
+  watchId = navigator.geolocation.watchPosition(onPosition, (err) => setStatus('paused'), { enableHighAccuracy: true });
 }
+
 function stopTracking() {
-  tracking = false; if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  tracking = false; if (watchId) navigator.geolocation.clearWatch(watchId);
   setStatus('idle');
   document.getElementById('start-btn').className = 'start';
   document.getElementById('btn-icon').textContent = '▶';
   document.getElementById('btn-label').textContent = 'START';
-  document.getElementById('mode-text').textContent = 'STOPPED';
   saveData();
 }
 
 function onPosition(pos) {
-  const lat = pos.coords.latitude; const lng = pos.coords.longitude; const acc = pos.coords.accuracy;
+  const { latitude: lat, longitude: lng, accuracy: acc } = pos.coords;
   currentAcc = acc;
-  if (tracking && (Date.now() - startTimestamp < 3000)) return;
-  if (lastPos && haversine(lastPos.lat, lastPos.lng, lat, lng) > 150) return;
 
   document.getElementById('acc-val').textContent = Math.round(acc) + 'm';
-  if (!userMarker) userMarker = L.circleMarker([lat, lng], { radius: 8, color: '#fff', fillColor: 'var(--accent2)', fillOpacity: 1, weight: 2 }).addTo(map);
+  document.getElementById('acc-val').style.color = acc < 20 ? 'var(--accent)' : 'var(--warn)';
+
+  if (!userMarker) userMarker = L.circleMarker([lat, lng], { radius: 8, color: '#fff', fillColor: 'var(--accent2)', fillOpacity: 1 }).addTo(map);
   else userMarker.setLatLng([lat, lng]);
 
   if (!tracking) return;
+
   if (lastPos) {
     const dist = haversine(lastPos.lat, lastPos.lng, lat, lng);
-    if (dist > 2) { headingHistory.push(bearing(lastPos.lat, lastPos.lng, lat, lng)); if (headingHistory.length > 5) headingHistory.shift(); totalDist += dist; }
+    if (dist < 2) return;
+    // Jitter Filter: Ignore jumps > 500m in one update
+    if (dist > 500) return; 
+    
+    const h = bearing(lastPos.lat, lastPos.lng, lat, lng);
+    headingHistory.push(h);
+    if (headingHistory.length > 5) headingHistory.shift();
+    totalDist += dist;
   }
   lastPos = { lat, lng };
-  const gap = computeGap(lat, lng);
-  document.getElementById('mode-text').textContent = (curveActive ? '⤴ CURVE ' : straightCount > 20 ? '→ HI-WAY ' : '→ STRAIGHT ') + gap + 'm';
+
+  const gap = computeGap();
+  const isTurningNow = headingHistory.length >= 2 && angleDiff(headingHistory[headingHistory.length-2], headingHistory[headingHistory.length-1]) >= settings.angle;
 
   if (lastSavedPos) {
     const dFromLast = haversine(lastSavedPos.lat, lastSavedPos.lng, lat, lng);
-    const isTurning = headingHistory.length >= 2 && angleDiff(headingHistory[headingHistory.length-2], headingHistory[headingHistory.length-1]) >= settings.angle;
-    if (dFromLast < gap && !isTurning) return;
+    if (dFromLast < gap && !isTurningNow) return;
   }
-  if (isAlreadyMapped(lat, lng)) { showToast(); return; }
 
-  const mode = curveActive ? 'curve' : straightCount > 20 ? 'highway' : straightCount > 6 ? 'straight' : 'grad';
+  if (haversine(lat, lng, 0, 0) > 20000000) return; // Basic sanitization
+
+  let mode = curveActive ? 'curve' : (straightCount > 20 ? 'highway' : (straightCount > 6 ? 'straight' : 'grad'));
   points.push({ lat, lng, t: Date.now(), mode, gap: Math.round(gap), acc: Math.round(acc), sid: sessions });
   lastSavedPos = { lat, lng };
-  rebuildMap(); updateStats(); saveData();
+  rebuildMap();
+  updateStats();
+  saveData();
 }
 
-function onGPSError() { setStatus('paused'); }
+// ==================== UI & STATS ====================
+function updateStats() {
+  document.getElementById('stat-pts').textContent = points.length;
+  document.getElementById('stat-km').textContent = (totalDist / 1000).toFixed(1);
+}
+
 function updateFeed() {
   const n = points.length;
   for (let i = 0; i < 3; i++) {
-    const idx = n - 1 - i; const coords = document.querySelector('.feed-coords-' + i); const idxEl = document.querySelector('#feed-' + i + ' .feed-idx'); const badge = document.getElementById('feed-badge-' + i);
+    const idx = n - 1 - i;
+    const coords = document.querySelector('.feed-coords-' + i);
+    const idxEl = document.querySelector('#feed-' + i + ' .feed-idx');
+    const badge = document.getElementById('feed-badge-' + i);
     if (idx >= 0) {
-      const p = points[idx]; coords.textContent = p.lat.toFixed(6) + ', ' + p.lng.toFixed(6); idxEl.textContent = '#' + (idx + 1);
-      badge.textContent = p.mode.toUpperCase(); badge.className = 'feed-badge ' + p.mode;
+      const p = points[idx];
+      coords.textContent = p.lat.toFixed(6) + ', ' + p.lng.toFixed(6);
+      idxEl.textContent = '#' + (idx + 1);
+      badge.textContent = p.mode.toUpperCase();
+      badge.className = 'feed-badge ' + p.mode;
     }
   }
 }
-function updateStats() { document.getElementById('stat-pts').textContent = points.length; document.getElementById('stat-km').textContent = (totalDist / 1000).toFixed(1); }
-function setStatus(state) {
-  document.getElementById('status-pill').className = 'status-pill ' + (state === 'active' ? '' : state);
-  document.getElementById('status-dot').className = 'dot' + (state === 'active' ? ' pulse' : '');
-  document.getElementById('status-text').textContent = state.toUpperCase();
-}
-let lastToastTime = 0;
-function showToast() { if (Date.now() - lastToastTime < 5000) return; lastToastTime = Date.now(); document.getElementById('toast').classList.add('show'); setTimeout(() => document.getElementById('toast').classList.remove('show'), 2000); }
 
-function undoLastPoint() { if (points.length > 0 && confirm("Undo?")) { points.pop(); rebuildMap(); updateStats(); saveData(); } }
-function showKmBreakdown() {
-  const list = document.getElementById('km-list'); list.innerHTML = ''; let kmData = {}; let d = 0;
-  for (let i = 1; i < points.length; i++) { d += haversine(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng); const k = Math.floor(d / 1000) + 1; kmData[k] = (kmData[k] || 0) + 1; }
-  for (let k in kmData) list.innerHTML += `<div class="km-row"><span class="km-no">KM ${k}</span><span>${kmData[k]} pts</span></div>`;
-  document.getElementById('modal-overlay').style.display = 'flex';
+function setStatus(s) {
+  document.getElementById('status-text').textContent = s.toUpperCase();
+  document.getElementById('status-pill').className = 'status-pill ' + (s==='active'?'':'idle');
 }
+
+function showKMData() {
+  let kmMap = {};
+  let d = 0;
+  points.forEach((p, i) => {
+    if (i > 0) d += haversine(points[i-1].lat, points[i-1].lng, p.lat, p.lng);
+    let k = Math.floor(d / 1000) + 1;
+    kmMap[k] = (kmMap[k] || 0) + 1;
+  });
+  let msg = "Points per KM:\n";
+  for(let k in kmMap) msg += `KM ${k}: ${kmMap[k]} pts\n`;
+  alert(msg);
+}
+
+document.getElementById('stat-pts').parentElement.onclick = showKMData;
+
+function undoLast() {
+  if (points.length === 0) return;
+  if (confirm("Delete last point?")) {
+    points.pop();
+    rebuildMap();
+    saveData();
+    updateStats();
+  }
+}
+
 function downloadJSON() {
   const proj = projects.find(p => p.id === currentPid);
-  const data = { meta: { app: 'PolyTrack', project: proj.name, points: points.length, dist: (totalDist/1000).toFixed(2) }, points };
+  const data = { meta: { project: proj.name, totalDist: totalDist/1000 }, points };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `polytrack_${proj.name.toLowerCase()}.json`; a.click();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `polytrack_${proj.name.toLowerCase()}.json`;
+  a.click();
 }
-function clearAllData() { if (confirm("Clear Project?")) { points = []; sessions = 0; totalDist = 0; rebuildMap(); updateStats(); saveData(); } }
+
+function clearAllData() {
+  if (confirm("Clear current project?")) {
+    points = []; totalDist = 0; lastSavedPos = null;
+    rebuildMap(); updateStats(); saveData();
+  }
+}
+
+function updateSetting(k, v) { settings[k] = parseFloat(v); document.getElementById('lbl-'+k).textContent = v+(k==='angle'?'°':' m'); saveData(); }
+function applySettingsUI() { for(let k in settings) { const el = document.getElementById('sl-'+k); if(el) el.value = settings[k]; } }
+function openSettings() { document.getElementById('si-pts').textContent = points.length; document.getElementById('settings-overlay').classList.add('open'); }
+function outsideClose(e) { if (e.target.id === 'settings-overlay') e.target.classList.remove('open'); }
 
 loadData();
+updateFeed();
 </script>
 </body>
 </html>
