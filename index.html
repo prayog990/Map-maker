@@ -23,7 +23,7 @@
     --font-mono: 'Space Mono', monospace;
   }
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  html, body { height:100%; background:var(--bg); color:var(--text); font-family:var(--font-mono); overflow:hidden; }
+  html, body { height: 100dvh; height: 100%; background:var(--bg); color:var(--text); font-family:var(--font-mono); overflow:hidden; display: flex; flex-direction: column; }
 
   /* HEADER */
   #header {
@@ -56,7 +56,7 @@
   /* MAIN LAYOUT */
   #app {
     display:flex; flex-direction:column;
-    height: calc(100vh - 57px);
+    flex: 1; min-height: 0;
   }
 
   /* DATA FEED BOX */
@@ -101,8 +101,7 @@
   /* BOTTOM CONTROLS */
   #controls {
     background:var(--surface); border-top:1px solid var(--border);
-    padding:10px 8px; display:flex; gap:6px; align-items:center; flex-shrink:0;
-    flex-wrap: nowrap;
+    padding:8px 8px 14px; display:flex; gap:6px; align-items:center; flex-shrink:0;
   }
   #start-btn {
     flex: 2; height:44px; border:none; border-radius:10px;
