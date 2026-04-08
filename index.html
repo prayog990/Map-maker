@@ -404,12 +404,9 @@ function renderProjectList() {
   if (!container) return;
   container.innerHTML = '';
   
-  // Sort projects: newest first
   const sortedProjects = [...projects].sort((a, b) => b.created - a.created);
   
   sortedProjects.forEach(p => {
-    const div = document.createElement('div');
-    div.className = `project-item ${p.id === currentPid ? 'active' : ''}`;
     const div = document.createElement('div');
     div.className = `project-item ${p.id === currentPid ? 'active' : ''}`;
     div.innerHTML = `
@@ -470,27 +467,6 @@ L.control.zoom({ position: 'bottomright' }).addTo(map);
 
 let polyline = L.polyline([], { color: '#00e5a0', weight: 3, opacity: 0.9 }).addTo(map);
 let userMarker = null;
-
-// ==================== STORAGE ====================
-function loadData() {
-  try {
-    const raw = localStorage.getItem(DB_KEY);
-    if (raw) {
-      const d = JSON.parse(raw);
-      points = d.points || [];
-      settings = Object.assign(settings, d.settings || {});
-      sessions = d.sessions || 0;
-      totalDist = d.totalDist || 0;
-    }
-  } catch(e) { points = []; }
-  applySettingsUI();
-  rebuildMap();
-  updateStats();
-}
-
-function saveData() {
-  localStorage.setItem(DB_KEY, JSON.stringify({ points, settings, sessions, totalDist }));
-}
 
 function rebuildMap() {
   let groups = [];
