@@ -364,7 +364,9 @@ function loadData() {
     const pList = localStorage.getItem('pt_projects');
     if (pList) projects = JSON.parse(pList);
     
-    currentPid = localStorage.getItem('pt_current_pid') || 'default';
+    // Agar currentPid pehle se set nahi hai (first load), tabhi storage se lo
+    const storedPid = localStorage.getItem('pt_current_pid');
+    if (storedPid) currentPid = storedPid;
     
     const rawSettings = localStorage.getItem('pt_settings');
     if (rawSettings) settings = Object.assign(settings, JSON.parse(rawSettings));
@@ -447,9 +449,20 @@ function createNewProject() {
 
 function switchProject(pid) {
   if (tracking) { alert("Tracking chal rahi hai, pehle stop karein!"); return; }
-  saveData(); // Save current project before switching
+  
+  // 1. Pehle current project ka data save karo
+  saveData();
+  
+  // 2. Active ID badlo aur storage me update karo
   currentPid = pid;
+  localStorage.setItem('pt_current_pid', pid);
+  
+  // 3. Naye project ka data load karo
   loadData();
+  
+  // 4. UI update karo
+  renderProjectList();
+  alert("Switched to: " + projects.find(p => p.id === pid).name);
 }
 
 function deleteProject(pid) {
