@@ -357,6 +357,7 @@ let straightCount = 0;
 let curveActive = false;
 let lastSavedPos = null;
 let totalDist = 0;
+let currentAcc = 0;
 
 // ==================== STORAGE ====================
 function loadData() {
@@ -478,7 +479,14 @@ const map = L.map('map', { zoomControl: false, attributionControl: false }).setV
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 22 }).addTo(map);
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-let polyline = L.polyline([], { color: '#00e5a0', weight: 3, opacity: 0.9 }).addTo(map);
+let polyline = L.polyline([], { 
+  color: '#00e5a0', 
+  weight: 4, 
+  opacity: 0.9, 
+  lineJoin: 'round', 
+  lineCap: 'round',
+  smoothFactor: 1.5 
+}).addTo(map);
 let userMarker = null;
 
 function rebuildMap() {
@@ -570,33 +578,33 @@ function computeGap(lat, lng) {
   const diff = angleDiff(prevH, currH);
 
   if (diff >= settings.angle) {
-    // CURVE detected
-    if (!curveActive) {
-      curveActive = true;
-      straightCount = 0;
-      gradualStep = 0;
-    }
+    curveActive = true;
+    straightCount = 0;
     return settings.curve;
   } else {
-    // STRAIGHT
     curveActive = false;
-    straightCount++;
+    
+    // Confidence Anchor: If GPS accuracy is poor (>25m), slow down the stretch
+    if (currentAcc > 25 && straightCount > 6) {
+      straightCount = 6; // Drop back to Stage 1 recovery
+    } else {
+      straightCount++;
+    }
 
-    // Gradual increase:
-    // straightCount 1-2 → curve gap
-    // 3-4 → normal/4
-    // 5-6 → normal/2
-    // 7+  → normal
+    // Stage 1: Curve Recovery (10m to Normal/2)
     if (straightCount <= 2) return settings.curve;
-    if (straightCount <= 4) {
-      const g = Math.round(settings.normal / 4 / 5) * 5;
-      return Math.max(g, settings.curve);
-    }
-    if (straightCount <= 6) {
-      const g = Math.round(settings.normal / 2 / 5) * 5;
-      return Math.max(g, settings.curve);
-    }
-    return settings.normal;
+    if (straightCount <= 4) return Math.max(Math.round(settings.normal / 4 / 5) * 5, settings.curve);
+    if (straightCount <= 6) return Math.max(Math.round(settings.normal / 2 / 5) * 5, settings.curve);
+    
+    // Stage 2: Normal Base Gap
+    if (straightCount <= 12) return settings.normal;
+    
+    // Stage 3: Highway Stretching (Normal x 1.5)
+    if (straightCount <= 20) return Math.round((settings.normal * 1.5) / 5) * 5;
+    
+    // Stage 4: Max Stretch (Normal x 2, capped at 300m)
+    let maxG = Math.round((settings.normal * 2) / 5) * 5;
+    return Math.min(maxG, 300);
   }
 }
 
@@ -645,6 +653,7 @@ function onPosition(pos) {
   const lat = pos.coords.latitude;
   const lng = pos.coords.longitude;
   const acc = pos.coords.accuracy;
+  currentAcc = acc;
 
   // Update accuracy badge
   document.getElementById('acc-val').textContent = Math.round(acc) + 'm';
@@ -695,7 +704,17 @@ function onPosition(pos) {
   // Check if we have traveled enough since last save
   if (lastSavedPos) {
     const distFromLast = haversine(lastSavedPos.lat, lastSavedPos.lng, lat, lng);
-    if (distFromLast < gap) return;
+    
+    // Emergency Break: If a curve is detected BEFORE the gap is reached
+    const isTurningNow = headingHistory.length >= 2 && 
+                         angleDiff(headingHistory[headingHistory.length-2], headingHistory[headingHistory.length-1]) >= settings.angle;
+
+    if (distFromLast < gap && !isTurningNow) return;
+    
+    // If we are turning, force immediate save and reset straightCount
+    if (isTurningNow && distFromLast < gap) {
+       console.log("Emergency Save: Curve detected during stretch!");
+    }
   }
 
   // Duplicate check
@@ -705,7 +724,10 @@ function onPosition(pos) {
   }
 
   // SAVE POINT
-  const mode = curveActive ? 'curve' : (straightCount > 6 ? 'straight' : 'grad');
+  let mode = 'grad';
+  if (curveActive) mode = 'curve';
+  else if (straightCount > 20) mode = 'highway';
+  else if (straightCount > 6) mode = 'straight';
   const pt = { lat, lng, t: Date.now(), mode, gap: Math.round(gap), acc: Math.round(acc), sid: sessions };
   points.push(pt);
   lastSavedPos = { lat, lng };
@@ -740,8 +762,8 @@ function updateFeed() {
       const p = points[idx];
       coords.textContent = p.lat.toFixed(6) + ', ' + p.lng.toFixed(6);
       idxEl.textContent = '#' + (idx + 1);
-      badge.textContent = p.mode === 'curve' ? 'CURVE' : p.mode === 'grad' ? 'GRAD' : p.gap + 'm';
-      badge.className = 'feed-badge' + (p.mode === 'curve' ? ' curve' : p.mode === 'grad' ? ' grad' : '');
+      badge.textContent = p.mode === 'curve' ? 'CURVE' : p.mode === 'highway' ? 'HI-WAY' : p.mode === 'grad' ? 'GRAD' : p.gap + 'm';
+      badge.className = 'feed-badge' + (p.mode === 'curve' ? ' curve' : p.mode === 'highway' ? ' grad' : p.mode === 'grad' ? ' grad' : '');
     } else if (i === 0 && n === 0) {
       coords.textContent = 'Waiting for data...';
       idxEl.textContent = '#—';
@@ -769,7 +791,10 @@ function setStatus(state) {
 }
 
 let toastTimer;
+let lastToastTime = 0;
 function showToast() {
+  if (Date.now() - lastToastTime < 5000) return; // 5 second ka gap
+  lastToastTime = Date.now();
   const t = document.getElementById('toast');
   t.classList.add('show');
   clearTimeout(toastTimer);
