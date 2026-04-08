@@ -358,28 +358,17 @@ let curveActive = false;
 let lastSavedPos = null;
 let totalDist = 0;
 let currentAcc = 0;
-let map, polyline, userMarker;
-let distSinceLastSave = 0;
+let startTimestamp = 0;
 
 // ==================== STORAGE ====================
 function loadData() {
   try {
     const pList = localStorage.getItem('pt_projects');
     if (pList) projects = JSON.parse(pList);
-    
-    // Agar currentPid pehle se set nahi hai (first load), tabhi storage se lo
     const storedPid = localStorage.getItem('pt_current_pid');
     if (storedPid) currentPid = storedPid;
-    
     const rawSettings = localStorage.getItem('pt_settings');
     if (rawSettings) settings = Object.assign(settings, JSON.parse(rawSettings));
-
-    // Migration for old users
-    const oldData = localStorage.getItem('polytrack_v2');
-    if (oldData && !localStorage.getItem('pt_data_default')) {
-       localStorage.setItem('pt_data_default', oldData);
-       localStorage.removeItem('polytrack_v2');
-    }
 
     const projectData = localStorage.getItem('pt_data_' + currentPid);
     if (projectData) {
@@ -408,9 +397,7 @@ function renderProjectList() {
   const container = document.getElementById('project-list-container');
   if (!container) return;
   container.innerHTML = '';
-  
   const sortedProjects = [...projects].sort((a, b) => b.created - a.created);
-  
   sortedProjects.forEach(p => {
     const div = document.createElement('div');
     div.className = `project-item ${p.id === currentPid ? 'active' : ''}`;
@@ -429,48 +416,25 @@ function createNewProject() {
   const name = prompt("Project Name daliye:");
   if (!name || name.trim() === "") return;
   if (tracking) { alert("Pehle tracking stop karein!"); return; }
-  
   const newId = 'p_' + Date.now();
-  const newProj = { id: newId, name: name.trim(), created: Date.now() };
-  
-  projects.push(newProj);
-  saveData();
-  
-  // Force selection and UI refresh
+  projects.push({ id: newId, name: name.trim(), created: Date.now() });
   currentPid = newId;
-  points = [];
-  sessions = 0;
-  totalDist = 0;
-  lastSavedPos = null;
-  
+  points = []; sessions = 0; totalDist = 0; lastSavedPos = null;
   saveData();
-  renderProjectList();
-  rebuildMap();
-  updateStats();
-  alert("Project '" + name + "' ready hai!");
+  loadData();
+  alert("Project ready hai!");
 }
 
 function switchProject(pid) {
-  if (tracking) { alert("Tracking chal rahi hai, pehle stop karein!"); return; }
-  
-  // 1. Pehle current project ka data save karo
+  if (tracking) { alert("Tracking chalu hai!"); return; }
   saveData();
-  
-  // 2. Active ID badlo aur storage me update karo
   currentPid = pid;
-  localStorage.setItem('pt_current_pid', pid);
-  
-  // 3. Naye project ka data load karo
   loadData();
-  
-  // 4. UI update karo
-  renderProjectList();
-  alert("Switched to: " + projects.find(p => p.id === pid).name);
 }
 
 function deleteProject(pid) {
   if (pid === 'default') return;
-  if (!confirm("Kya aap ye project delete karna chahte hain? Saara data chala jayega.")) return;
+  if (!confirm("Delete karein?")) return;
   projects = projects.filter(p => p.id !== pid);
   localStorage.removeItem('pt_data_' + pid);
   if (currentPid === pid) currentPid = 'default';
@@ -478,38 +442,45 @@ function deleteProject(pid) {
   loadData();
 }
 
+// ==================== MAP ====================
+const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([20.5937, 78.9629], 5);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 22 }).addTo(map);
+L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-// ==================== SETTINGS ====================
-function updateSetting(key, val) {
-  settings[key] = parseFloat(val);
-  document.getElementById('lbl-' + key).textContent =
-    key === 'angle' ? val + '°' : val + ' m';
-  saveData();
+let polyline = L.polyline([], { color: '#00e5a0', weight: 4, opacity: 0.9, lineJoin: 'round', lineCap: 'round', smoothFactor: 1.5 }).addTo(map);
+let userMarker = null;
+
+function rebuildMap() {
+  let groups = []; let currentGroup = []; let lastSid = null;
+  points.forEach(p => {
+    if (lastSid !== null && p.sid !== lastSid) { groups.push(currentGroup); currentGroup = []; }
+    currentGroup.push([p.lat, p.lng]);
+    lastSid = p.sid;
+  });
+  if (currentGroup.length > 0) groups.push(currentGroup);
+  polyline.setLatLngs(groups);
+  updateFeed();
 }
 
+// ==================== HELPERS ====================
+function updateSetting(key, val) {
+  settings[key] = parseFloat(val);
+  document.getElementById('lbl-' + key).textContent = key === 'angle' ? val + '°' : val + ' m';
+  saveData();
+}
 function applySettingsUI() {
   ['normal','curve','angle','skip'].forEach(k => {
     const el = document.getElementById('sl-' + k);
-    if (el) {
-      el.value = settings[k];
-      const suffix = k === 'angle' ? '°' : ' m';
-      document.getElementById('lbl-' + k).textContent = settings[k] + suffix;
-    }
+    if (el) { el.value = settings[k]; document.getElementById('lbl-' + k).textContent = settings[k] + (k === 'angle' ? '°' : ' m'); }
   });
 }
-
 function openSettings() {
   document.getElementById('si-pts').textContent = points.length;
   document.getElementById('si-km').textContent = (totalDist/1000).toFixed(2) + ' km';
   document.getElementById('si-sess').textContent = sessions;
   document.getElementById('settings-overlay').classList.add('open');
 }
-function outsideClose(e) {
-  if (e.target === document.getElementById('settings-overlay'))
-    document.getElementById('settings-overlay').classList.remove('open');
-}
-
-// ==================== HAVERSINE ====================
+function outsideClose(e) { if (e.target === document.getElementById('settings-overlay')) document.getElementById('settings-overlay').classList.remove('open'); }
 function haversine(lat1, lng1, lat2, lng2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -517,336 +488,123 @@ function haversine(lat1, lng1, lat2, lng2) {
   const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
-
 function bearing(lat1, lng1, lat2, lng2) {
   const dLng = (lng2 - lng1) * Math.PI / 180;
   const y = Math.sin(dLng) * Math.cos(lat2 * Math.PI / 180);
-  const x = Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180)
-           - Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLng);
+  const x = Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180) - Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLng);
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
+function angleDiff(a, b) { let d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
 
-function angleDiff(a, b) {
-  let d = Math.abs(a - b) % 360;
-  return d > 180 ? 360 - d : d;
-}
-
-// ==================== DUPLICATE CHECK ====================
 function isAlreadyMapped(lat, lng) {
   const skipDist = settings.skip;
-  for (let p of points) {
-    if (haversine(lat, lng, p.lat, p.lng) < skipDist) return true;
-  }
+  for (let p of points) { if (haversine(lat, lng, p.lat, p.lng) < skipDist) return true; }
   return false;
 }
 
-// ==================== SMART GAP ====================
 function computeGap(lat, lng) {
   if (headingHistory.length < 2) return settings.normal;
-
-  const prevH = headingHistory[headingHistory.length - 2];
-  const currH = headingHistory[headingHistory.length - 1];
-  const diff = angleDiff(prevH, currH);
-
-  if (diff >= settings.angle) {
-    curveActive = true;
-    straightCount = 0;
-    return settings.curve;
-  } else {
-    curveActive = false;
-    
-    // Confidence Anchor: If GPS accuracy is poor (>25m), slow down the stretch
-    if (currentAcc > 25 && straightCount > 6) {
-      straightCount = 6; // Drop back to Stage 1 recovery
-    } else {
-      straightCount++;
-    }
-
-    // Stage 1: Curve Recovery (10m to Normal/2)
-    if (straightCount <= 2) return settings.curve;
-    if (straightCount <= 4) return Math.max(Math.round(settings.normal / 4 / 5) * 5, settings.curve);
-    if (straightCount <= 6) return Math.max(Math.round(settings.normal / 2 / 5) * 5, settings.curve);
-    
-    // Stage 2: Normal Base Gap
-    if (straightCount <= 12) return settings.normal;
-    
-    // Stage 3: Highway Stretching (Normal x 1.5)
-    if (straightCount <= 20) return Math.round((settings.normal * 1.5) / 5) * 5;
-    
-    // Stage 4: Max Stretch (Normal x 2, capped at 300m)
-    let maxG = Math.round((settings.normal * 2) / 5) * 5;
-    return Math.min(maxG, 300);
-  }
+  const diff = angleDiff(headingHistory[headingHistory.length - 2], headingHistory[headingHistory.length - 1]);
+  if (diff >= settings.angle) { curveActive = true; straightCount = 0; return settings.curve; }
+  curveActive = false;
+  if (currentAcc > 25 && straightCount > 6) straightCount = 6; else straightCount++;
+  if (straightCount <= 2) return settings.curve;
+  if (straightCount <= 4) return Math.max(Math.round(settings.normal / 4 / 5) * 5, settings.curve);
+  if (straightCount <= 6) return Math.max(Math.round(settings.normal / 2 / 5) * 5, settings.curve);
+  if (straightCount <= 12) return settings.normal;
+  if (straightCount <= 20) return Math.round((settings.normal * 1.5) / 5) * 5;
+  return Math.min(Math.round((settings.normal * 2) / 5) * 5, 300);
 }
 
 // ==================== TRACKING ====================
-function toggleTracking() {
-  if (tracking) stopTracking(); else startTracking();
-}
-
+function toggleTracking() { if (tracking) stopTracking(); else startTracking(); }
 function startTracking() {
-  if (!navigator.geolocation) {
-    alert('Geolocation not supported on this device/browser.');
-    return;
-  }
-  tracking = true;
-  sessions++;
-  distSinceLastSave = 0;
-  curveActive = false;
-  straightCount = 0;
-  headingHistory = [];
-
+  if (!navigator.geolocation) return;
+  tracking = true; sessions++; startTimestamp = Date.now(); headingHistory = []; straightCount = 0;
   setStatus('active');
   document.getElementById('start-btn').className = 'stop';
   document.getElementById('btn-icon').textContent = '■';
   document.getElementById('btn-label').textContent = 'STOP';
-
-  watchId = navigator.geolocation.watchPosition(onPosition, onGPSError, {
-    enableHighAccuracy: true,
-    timeout: 8000,
-    maximumAge: 0
-  });
+  watchId = navigator.geolocation.watchPosition(onPosition, onGPSError, { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
 }
-
 function stopTracking() {
-  tracking = false;
-  if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  tracking = false; if (watchId !== null) navigator.geolocation.clearWatch(watchId);
   setStatus('idle');
   document.getElementById('start-btn').className = 'start';
   document.getElementById('btn-icon').textContent = '▶';
   document.getElementById('btn-label').textContent = 'START';
   document.getElementById('mode-text').textContent = 'STOPPED';
-  document.getElementById('mode-dot').style.background = 'var(--muted)';
   saveData();
 }
 
 function onPosition(pos) {
-  const lat = pos.coords.latitude;
-  const lng = pos.coords.longitude;
-  const acc = pos.coords.accuracy;
+  const lat = pos.coords.latitude; const lng = pos.coords.longitude; const acc = pos.coords.accuracy;
   currentAcc = acc;
+  if (tracking && (Date.now() - startTimestamp < 3000)) return;
+  if (lastPos && haversine(lastPos.lat, lastPos.lng, lat, lng) > 150) return;
 
-  // Update accuracy badge
   document.getElementById('acc-val').textContent = Math.round(acc) + 'm';
-  document.getElementById('acc-val').style.color = acc < 20 ? 'var(--accent)' : acc < 50 ? 'var(--accent2)' : 'var(--warn)';
-
-  // Update user marker
-  if (!userMarker) {
-    userMarker = L.circleMarker([lat, lng], {
-      radius: 8, color: '#fff', fillColor: 'var(--accent2)', fillOpacity: 1, weight: 2
-    }).addTo(map);
-  } else {
-    userMarker.setLatLng([lat, lng]);
-  }
+  if (!userMarker) userMarker = L.circleMarker([lat, lng], { radius: 8, color: '#fff', fillColor: 'var(--accent2)', fillOpacity: 1, weight: 2 }).addTo(map);
+  else userMarker.setLatLng([lat, lng]);
 
   if (!tracking) return;
-
-  // Compute heading if we have last position
   if (lastPos) {
     const dist = haversine(lastPos.lat, lastPos.lng, lat, lng);
-    if (dist < 2) return; // too small movement
-    const h = bearing(lastPos.lat, lastPos.lng, lat, lng);
-    headingHistory.push(h);
-    if (headingHistory.length > 5) headingHistory.shift();
-    distSinceLastSave += dist;
-    totalDist += dist;
+    if (dist > 2) { headingHistory.push(bearing(lastPos.lat, lastPos.lng, lat, lng)); if (headingHistory.length > 5) headingHistory.shift(); totalDist += dist; }
   }
-
   lastPos = { lat, lng };
-
-  // Determine current required gap
   const gap = computeGap(lat, lng);
+  document.getElementById('mode-text').textContent = (curveActive ? '⤴ CURVE ' : straightCount > 20 ? '→ HI-WAY ' : '→ STRAIGHT ') + gap + 'm';
 
-  // Update mode display
-  if (curveActive) {
-    document.getElementById('mode-text').textContent = '⤴ CURVE ' + gap + 'm';
-    document.getElementById('mode-text').style.color = 'var(--warn)';
-    document.getElementById('mode-dot').style.background = 'var(--warn)';
-  } else if (straightCount > 6) {
-    document.getElementById('mode-text').textContent = '→ STRAIGHT ' + gap + 'm';
-    document.getElementById('mode-text').style.color = 'var(--accent)';
-    document.getElementById('mode-dot').style.background = 'var(--accent)';
-  } else {
-    document.getElementById('mode-text').textContent = '↗ TRANS ' + gap + 'm';
-    document.getElementById('mode-text').style.color = 'var(--accent2)';
-    document.getElementById('mode-dot').style.background = 'var(--accent2)';
-  }
-
-  // Check if we have traveled enough since last save
   if (lastSavedPos) {
-    const distFromLast = haversine(lastSavedPos.lat, lastSavedPos.lng, lat, lng);
-    
-    // Emergency Break: If a curve is detected BEFORE the gap is reached
-    const isTurningNow = headingHistory.length >= 2 && 
-                         angleDiff(headingHistory[headingHistory.length-2], headingHistory[headingHistory.length-1]) >= settings.angle;
-
-    if (distFromLast < gap && !isTurningNow) return;
-    
-    // If we are turning, force immediate save and reset straightCount
-    if (isTurningNow && distFromLast < gap) {
-       console.log("Emergency Save: Curve detected during stretch!");
-    }
+    const dFromLast = haversine(lastSavedPos.lat, lastSavedPos.lng, lat, lng);
+    const isTurning = headingHistory.length >= 2 && angleDiff(headingHistory[headingHistory.length-2], headingHistory[headingHistory.length-1]) >= settings.angle;
+    if (dFromLast < gap && !isTurning) return;
   }
+  if (isAlreadyMapped(lat, lng)) { showToast(); return; }
 
-  // Duplicate check
-  if (isAlreadyMapped(lat, lng)) {
-    showToast();
-    return;
-  }
-
-  // SAVE POINT
-  let mode = 'grad';
-  if (curveActive) mode = 'curve';
-  else if (straightCount > 20) mode = 'highway';
-  else if (straightCount > 6) mode = 'straight';
-  const pt = { lat, lng, t: Date.now(), mode, gap: Math.round(gap), acc: Math.round(acc), sid: sessions };
-  points.push(pt);
+  const mode = curveActive ? 'curve' : straightCount > 20 ? 'highway' : straightCount > 6 ? 'straight' : 'grad';
+  points.push({ lat, lng, t: Date.now(), mode, gap: Math.round(gap), acc: Math.round(acc), sid: sessions });
   lastSavedPos = { lat, lng };
-
-  // Update polyline without connecting gaps
-  rebuildMap();
-
-  // Update feed & stats
-  updateFeed();
-  updateStats();
-  saveData();
+  rebuildMap(); updateStats(); saveData();
 }
 
-function onGPSError(err) {
-  console.warn('GPS error:', err.message);
-  setStatus('paused');
-}
-
-// ==================== UI UPDATES ====================
+function onGPSError() { setStatus('paused'); }
 function updateFeed() {
   const n = points.length;
   for (let i = 0; i < 3; i++) {
-    const idx = n - 1 - i;
-    const rowIdx = 2 - i; // 0=latest at bottom, 2=oldest at top
-    const feedIdx = i;    // feed-0=latest, feed-2=oldest
-
-    const coords = document.querySelector('.feed-coords-' + feedIdx);
-    const idxEl = document.querySelector('#feed-' + feedIdx + ' .feed-idx');
-    const badge = document.getElementById('feed-badge-' + feedIdx);
-
-    if (idx >= 0 && idx < points.length) {
-      const p = points[idx];
-      coords.textContent = p.lat.toFixed(6) + ', ' + p.lng.toFixed(6);
-      idxEl.textContent = '#' + (idx + 1);
-      badge.textContent = p.mode === 'curve' ? 'CURVE' : p.mode === 'highway' ? 'HI-WAY' : p.mode === 'grad' ? 'GRAD' : p.gap + 'm';
-      badge.className = 'feed-badge' + (p.mode === 'curve' ? ' curve' : p.mode === 'highway' ? ' grad' : p.mode === 'grad' ? ' grad' : '');
-    } else if (i === 0 && n === 0) {
-      coords.textContent = 'Waiting for data...';
-      idxEl.textContent = '#—';
-      badge.textContent = '';
-    } else {
-      coords.textContent = '—';
-      idxEl.textContent = '#—';
-      badge.textContent = '';
+    const idx = n - 1 - i; const coords = document.querySelector('.feed-coords-' + i); const idxEl = document.querySelector('#feed-' + i + ' .feed-idx'); const badge = document.getElementById('feed-badge-' + i);
+    if (idx >= 0) {
+      const p = points[idx]; coords.textContent = p.lat.toFixed(6) + ', ' + p.lng.toFixed(6); idxEl.textContent = '#' + (idx + 1);
+      badge.textContent = p.mode.toUpperCase(); badge.className = 'feed-badge ' + p.mode;
     }
   }
 }
-
-function updateStats() {
-  document.getElementById('stat-pts').textContent = points.length;
-  document.getElementById('stat-km').textContent = (totalDist / 1000).toFixed(1);
-}
-
+function updateStats() { document.getElementById('stat-pts').textContent = points.length; document.getElementById('stat-km').textContent = (totalDist / 1000).toFixed(1); }
 function setStatus(state) {
-  const pill = document.getElementById('status-pill');
-  const dot = document.getElementById('status-dot');
-  const text = document.getElementById('status-text');
-  pill.className = 'status-pill ' + (state === 'active' ? '' : state);
-  dot.className = 'dot' + (state === 'active' ? ' pulse' : '');
-  text.textContent = state === 'active' ? 'TRACKING' : state === 'paused' ? 'GPS WEAK' : 'IDLE';
+  document.getElementById('status-pill').className = 'status-pill ' + (state === 'active' ? '' : state);
+  document.getElementById('status-dot').className = 'dot' + (state === 'active' ? ' pulse' : '');
+  document.getElementById('status-text').textContent = state.toUpperCase();
 }
-
-let toastTimer;
 let lastToastTime = 0;
-function showToast() {
-  if (Date.now() - lastToastTime < 5000) return; // 5 second ka gap
-  lastToastTime = Date.now();
-  const t = document.getElementById('toast');
-  t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2000);
-}
+function showToast() { if (Date.now() - lastToastTime < 5000) return; lastToastTime = Date.now(); document.getElementById('toast').classList.add('show'); setTimeout(() => document.getElementById('toast').classList.remove('show'), 2000); }
 
-// ==================== DOWNLOAD ====================
+function undoLastPoint() { if (points.length > 0 && confirm("Undo?")) { points.pop(); rebuildMap(); updateStats(); saveData(); } }
+function showKmBreakdown() {
+  const list = document.getElementById('km-list'); list.innerHTML = ''; let kmData = {}; let d = 0;
+  for (let i = 1; i < points.length; i++) { d += haversine(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng); const k = Math.floor(d / 1000) + 1; kmData[k] = (kmData[k] || 0) + 1; }
+  for (let k in kmData) list.innerHTML += `<div class="km-row"><span class="km-no">KM ${k}</span><span>${kmData[k]} pts</span></div>`;
+  document.getElementById('modal-overlay').style.display = 'flex';
+}
 function downloadJSON() {
-  const proj = projects.find(p => p.id === currentPid) || {name: 'Unknown'};
-  const data = {
-    meta: {
-      app: 'PolyTrack',
-      projectName: proj.name,
-      projectId: currentPid,
-      exported: new Date().toISOString(),
-      totalPoints: points.length,
-      totalDistanceKm: (totalDist / 1000).toFixed(3),
-      sessions,
-      settings
-    },
-    points: points.map((p, i) => ({
-      id: i + 1,
-      lat: p.lat,
-      lng: p.lng,
-      timestamp: new Date(p.t).toISOString(),
-      mode: p.mode,
-      gapUsed: p.gap,
-      gpsAccuracy: p.acc,
-      sid: p.sid
-    }))
-  };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  const safeName = proj.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-  a.download = `polytrack_${safeName}_${new Date().toISOString().slice(0,10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-// ==================== CLEAR ====================
-function clearAllData() {
   const proj = projects.find(p => p.id === currentPid);
-  if (!confirm(`Kya aap "${proj.name}" ka saara data clear karna chahte hain?`)) return;
-  points = []; sessions = 0; totalDist = 0; lastSavedPos = null; lastPos = null;
-  polyline.setLatLngs([]);
-  updateFeed(); updateStats();
-  saveData();
-  document.getElementById('settings-overlay').classList.remove('open');
+  const data = { meta: { app: 'PolyTrack', project: proj.name, points: points.length, dist: (totalDist/1000).toFixed(2) }, points };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `polytrack_${proj.name.toLowerCase()}.json`; a.click();
 }
+function clearAllData() { if (confirm("Clear Project?")) { points = []; sessions = 0; totalDist = 0; rebuildMap(); updateStats(); saveData(); } }
 
-// ==================== VISIBILITY / MOVEMENT ====================
-// Auto-pause when tab hidden, resume when visible
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden && tracking) {
-    // keep watch alive — GPS continues in background on most mobile browsers
-  }
-});
-
-// ==================== MAP ENGINE ====================
-function initMap() {
-  if (map) return;
-  map = L.map('map', { zoomControl: false, attributionControl: false }).setView([0, 0], 2);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 20 }).addTo(map);
-  polyline = L.polyline([], { color: '#00e5a0', weight: 3, opacity: 0.8 }).addTo(map);
-}
-
-function rebuildMap() {
-  if (!map) initMap();
-  const latlngs = points.map(p => [p.lat, p.lng]);
-  polyline.setLatLngs(latlngs);
-  if (latlngs.length > 0) {
-    map.panTo(latlngs[latlngs.length - 1]);
-  }
-}
-
-// ==================== INIT ====================
-initMap();
 loadData();
-updateFeed();
 </script>
 </body>
 </html>
