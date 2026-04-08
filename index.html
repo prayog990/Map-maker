@@ -484,9 +484,6 @@ function rebuildMap() {
   if (currentGroup.length > 0) groups.push(currentGroup);
 
   polyline.setLatLngs(groups);
-  if (points.length > 0) {
-    map.fitBounds(polyline.getBounds(), { padding: [20, 20] });
-  }
   updateFeed();
 }
 
@@ -648,7 +645,6 @@ function onPosition(pos) {
   } else {
     userMarker.setLatLng([lat, lng]);
   }
-  map.panTo([lat, lng], { animate: true });
 
   if (!tracking) return;
 
