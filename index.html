@@ -358,6 +358,7 @@ let curveActive = false;
 let lastSavedPos = null;
 let totalDist = 0;
 let currentAcc = 0;
+let map, polyline, userMarker;
 let distSinceLastSave = 0;
 
 // ==================== STORAGE ====================
@@ -825,7 +826,25 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+// ==================== MAP ENGINE ====================
+function initMap() {
+  if (map) return;
+  map = L.map('map', { zoomControl: false, attributionControl: false }).setView([0, 0], 2);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 20 }).addTo(map);
+  polyline = L.polyline([], { color: '#00e5a0', weight: 3, opacity: 0.8 }).addTo(map);
+}
+
+function rebuildMap() {
+  if (!map) initMap();
+  const latlngs = points.map(p => [p.lat, p.lng]);
+  polyline.setLatLngs(latlngs);
+  if (latlngs.length > 0) {
+    map.panTo(latlngs[latlngs.length - 1]);
+  }
+}
+
 // ==================== INIT ====================
+initMap();
 loadData();
 updateFeed();
 </script>
